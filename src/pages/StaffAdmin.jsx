@@ -5,10 +5,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Card } from '@/components/ui/card';
-import { Plus, Pencil, Trash2, Eye, EyeOff, Save, X, LogOut, Loader2, ShieldAlert, Mail, UserPlus } from 'lucide-react';
+import { Plus, Pencil, Trash2, Eye, EyeOff, Save, X, LogOut, Loader2, ShieldAlert, UserPlus, Mail } from 'lucide-react';
 import { toast } from 'sonner';
-
-const OWNER_EMAIL = 'abzta123@gmail.com';
 
 export default function StaffAdmin() {
   const [user, setUser] = useState(null);
@@ -16,64 +14,77 @@ export default function StaffAdmin() {
   const [editingArticle, setEditingArticle] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [showInvite, setShowInvite] = useState(false);
+  const [staffList, setStaffList] = useState([]);
+
+  // Login
+  const [loginEmail, setLoginEmail] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [loginLoading, setLoginLoading] = useState(false);
+
+  // Invite
   const [inviteEmail, setInviteEmail] = useState('');
-  const [allowedEmails, setAllowedEmails] = useState([]);
   const [inviting, setInviting] = useState(false);
+
   const queryClient = useQueryClient();
 
   useEffect(() => {
-    // Listen for auth state
     supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) {
-        setUser(session.user);
-      }
-      setLoading(false);
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user || null);
       setLoading(false);
     });
-
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
+      setUser(session?.user || null);
+      setLoading(false);
+    });
     return () => subscription.unsubscribe();
   }, []);
 
-  // Load allowed emails from DB
   useEffect(() => {
-    if (user?.email === OWNER_EMAIL) {
-      supabase.from('staff_emails').select('email').then(({ data }) => {
-        setAllowedEmails(data?.map(r => r.email) || []);
-      });
+    if (user) {
+      supabase.from('staff_emails').select('*').order('created_at').then(({ data }) => setStaffList(data || []));
     }
   }, [user]);
 
-  const isAllowed = user && (user.email === OWNER_EMAIL || allowedEmails.includes(user.email));
-  const isOwner = user?.email === OWNER_EMAIL;
-
-  const handleGoogleLogin = async () => {
-    await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: { redirectTo: window.location.href }
-    });
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setLoginLoading(true);
+    setLoginError('');
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email: loginEmail, password: loginPassword });
+      if (error) throw error;
+    } catch {
+      setLoginError('Email o contraseña incorrectos');
+    } finally {
+      setLoginLoading(false);
+    }
   };
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
-    setUser(null);
   };
 
   const handleInvite = async (e) => {
     e.preventDefault();
     setInviting(true);
     try {
-      const { error } = await supabase.from('staff_emails').insert({ email: inviteEmail });
-      if (error) throw error;
-      setAllowedEmails(prev => [...prev, inviteEmail]);
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/invite-staff`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ email: inviteEmail })
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error);
+      setStaffList(prev => [...prev, { email: inviteEmail }]);
       setInviteEmail('');
       setShowInvite(false);
-      toast.success(`${inviteEmail} añadido al staff`);
+      toast.success(`Invitación enviada a ${inviteEmail} — recibirá un email para crear su contraseña`);
     } catch (err) {
-      toast.error('Error al añadir email');
+      toast.error(err.message || 'Error al enviar invitación');
     } finally {
       setInviting(false);
     }
@@ -82,55 +93,42 @@ export default function StaffAdmin() {
   const handleRemoveStaff = async (email) => {
     if (!confirm(`¿Remover a ${email} del staff?`)) return;
     await supabase.from('staff_emails').delete().eq('email', email);
-    setAllowedEmails(prev => prev.filter(e => e !== email));
-    toast.success('Email removido del staff');
+    setStaffList(prev => prev.filter(u => u.email !== email));
+    toast.success('Staff removido');
   };
 
   const { data: articles = [], isLoading: articlesLoading } = useQuery({
     queryKey: ['admin-articles'],
     queryFn: () => Article.list('-created_at'),
-    enabled: !!isAllowed
+    enabled: !!user
   });
 
   const createMutation = useMutation({
     mutationFn: (data) => Article.create(data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['admin-articles'] });
-      toast.success('Artículo creado');
-      setShowForm(false);
-      setEditingArticle(null);
-    }
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['admin-articles'] }); toast.success('Artículo creado'); setShowForm(false); setEditingArticle(null); }
   });
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }) => Article.update(id, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['admin-articles'] });
-      toast.success('Artículo actualizado');
-      setShowForm(false);
-      setEditingArticle(null);
-    }
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['admin-articles'] }); toast.success('Artículo actualizado'); setShowForm(false); setEditingArticle(null); }
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id) => Article.delete(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['admin-articles'] });
-      toast.success('Artículo eliminado');
-    }
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['admin-articles'] }); toast.success('Eliminado'); }
   });
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    const formData = new FormData(e.target);
+    const fd = new FormData(e.target);
     const data = {
-      title: formData.get('title'),
-      content: formData.get('content'),
-      excerpt: formData.get('excerpt'),
-      author: formData.get('author'),
-      cover_image: formData.get('cover_image'),
-      published: formData.get('published') === 'true',
-      published_date: formData.get('published') === 'true' ? new Date().toISOString() : null
+      title: fd.get('title'),
+      content: fd.get('content'),
+      excerpt: fd.get('excerpt'),
+      author: fd.get('author'),
+      cover_image: fd.get('cover_image'),
+      published: fd.get('published') === 'true',
+      published_date: fd.get('published') === 'true' ? new Date().toISOString() : null
     };
     if (editingArticle) {
       updateMutation.mutate({ id: editingArticle.id, data });
@@ -153,50 +151,51 @@ export default function StaffAdmin() {
     </div>
   );
 
-  // Not logged in
+  // Not logged in — show login form
   if (!user) return (
     <div className="min-h-screen flex items-center justify-center bg-[#FFFCFA]">
-      <Card className="p-10 max-w-sm w-full text-center shadow-sm">
-        <img src="/logo.png" alt="Valmai" className="h-16 w-auto mx-auto mb-6" />
-        <h2 className="text-xl font-medium text-gray-800 mb-2">Acceso Staff</h2>
-        <p className="text-gray-500 text-sm mb-6">Inicia sesión con tu cuenta de Google autorizada</p>
-        <Button onClick={handleGoogleLogin} className="w-full gap-3 bg-[#EF2828] hover:bg-[#d42222]">
-          <svg className="w-4 h-4" viewBox="0 0 24 24">
-            <path fill="white" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-            <path fill="white" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-            <path fill="white" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
-            <path fill="white" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
-          </svg>
-          Iniciar sesión con Google
-        </Button>
+      <Card className="p-10 max-w-sm w-full shadow-sm">
+        <div className="text-center mb-8">
+          <img src="/logo.png" alt="Valmai" className="h-14 w-auto mx-auto mb-4" />
+          <h2 className="text-xl font-medium text-gray-800">Acceso Staff</h2>
+          <p className="text-gray-500 text-sm mt-1">Inicia sesión con tus credenciales</p>
+        </div>
+        {loginError && (
+          <div className="bg-red-50 border border-red-200 text-red-600 text-sm px-4 py-3 rounded-lg mb-4">
+            {loginError}
+          </div>
+        )}
+        <form onSubmit={handleLogin} className="space-y-4">
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">Email</label>
+            <Input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} required placeholder="tu@email.com" />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-600 mb-1">Contraseña</label>
+            <Input type="password" value={loginPassword} onChange={e => setLoginPassword(e.target.value)} required placeholder="••••••••" />
+          </div>
+          <Button type="submit" disabled={loginLoading} className="w-full bg-[#EF2828] hover:bg-[#d42222]">
+            {loginLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Iniciar sesión'}
+          </Button>
+        </form>
       </Card>
-    </div>
-  );
-
-  // Logged in but not allowed
-  if (!isAllowed) return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-[#FFFCFA] gap-4">
-      <ShieldAlert className="w-16 h-16 text-gray-300" />
-      <h2 className="text-xl font-medium text-gray-700">Sin acceso</h2>
-      <p className="text-gray-500 text-sm">Tu cuenta ({user.email}) no está autorizada.</p>
-      <Button variant="outline" onClick={handleLogout}>Cerrar sesión</Button>
     </div>
   );
 
   return (
     <div className="min-h-screen bg-gray-50 py-12">
       <div className="max-w-6xl mx-auto px-6">
+
+        {/* Header */}
         <div className="flex justify-between items-center mb-8">
           <div>
             <h1 className="text-3xl font-light text-gray-900">Panel de Administración</h1>
             <p className="text-gray-500 text-sm mt-1">{user.email}</p>
           </div>
           <div className="flex gap-3">
-            {isOwner && (
-              <Button onClick={() => setShowInvite(!showInvite)} variant="outline" className="gap-2">
-                <UserPlus className="w-4 h-4" /> Gestionar Staff
-              </Button>
-            )}
+            <Button onClick={() => setShowInvite(!showInvite)} variant="outline" className="gap-2">
+              <UserPlus className="w-4 h-4" /> Gestionar Staff
+            </Button>
             <Button onClick={() => { setEditingArticle(null); setShowForm(true); }} className="bg-[#EF2828] hover:bg-[#d42222] gap-2">
               <Plus className="w-4 h-4" /> Nuevo Artículo
             </Button>
@@ -206,8 +205,8 @@ export default function StaffAdmin() {
           </div>
         </div>
 
-        {/* Staff Management Panel (owner only) */}
-        {showInvite && isOwner && (
+        {/* Staff Management */}
+        {showInvite && (
           <Card className="p-6 mb-8 border-blue-100 bg-blue-50/30">
             <h2 className="text-lg font-medium text-gray-800 mb-4 flex items-center gap-2">
               <UserPlus className="w-5 h-5" /> Gestionar Staff
@@ -223,26 +222,22 @@ export default function StaffAdmin() {
               />
               <Button type="submit" disabled={inviting} className="bg-[#EF2828] hover:bg-[#d42222] gap-2">
                 {inviting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
-                Añadir
+                Invitar
               </Button>
             </form>
+            <p className="text-xs text-gray-500 mb-3">La persona recibirá un email para crear su contraseña automáticamente.</p>
             <div className="space-y-2">
-              <p className="text-xs text-gray-500 font-medium uppercase tracking-wide mb-3">Emails autorizados</p>
-              <div className="flex items-center justify-between bg-white rounded-lg px-4 py-2 border border-gray-100">
-                <span className="text-sm text-gray-700">{OWNER_EMAIL}</span>
-                <span className="text-xs text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">Dueño</span>
-              </div>
-              {allowedEmails.map(email => (
-                <div key={email} className="flex items-center justify-between bg-white rounded-lg px-4 py-2 border border-gray-100">
-                  <span className="text-sm text-gray-700">{email}</span>
-                  <button onClick={() => handleRemoveStaff(email)} className="text-red-500 hover:text-red-700">
+              <p className="text-xs text-gray-500 font-medium uppercase tracking-wide mb-2">Staff actual</p>
+              {staffList.length === 0 ? (
+                <p className="text-sm text-gray-400 text-center py-2">Solo tú tienes acceso por ahora</p>
+              ) : staffList.map(s => (
+                <div key={s.email} className="flex items-center justify-between bg-white rounded-lg px-4 py-2 border border-gray-100">
+                  <span className="text-sm text-gray-700">{s.email}</span>
+                  <button onClick={() => handleRemoveStaff(s.email)} className="text-red-400 hover:text-red-600">
                     <X className="w-4 h-4" />
                   </button>
                 </div>
               ))}
-              {allowedEmails.length === 0 && (
-                <p className="text-sm text-gray-400 text-center py-2">No hay staff añadido aún</p>
-              )}
             </div>
           </Card>
         )}
@@ -273,7 +268,9 @@ export default function StaffAdmin() {
                   <option value="true">Publicado</option>
                 </select></div>
               <div className="flex gap-3 pt-4">
-                <Button type="submit" className="bg-[#EF2828] hover:bg-[#d42222]"><Save className="w-4 h-4 mr-2" />{editingArticle ? 'Actualizar' : 'Crear'}</Button>
+                <Button type="submit" className="bg-[#EF2828] hover:bg-[#d42222]">
+                  <Save className="w-4 h-4 mr-2" />{editingArticle ? 'Actualizar' : 'Crear'}
+                </Button>
                 <Button type="button" variant="outline" onClick={() => { setShowForm(false); setEditingArticle(null); }}>Cancelar</Button>
               </div>
             </form>
@@ -300,7 +297,7 @@ export default function StaffAdmin() {
                   {article.excerpt && <p className="text-sm text-gray-500 line-clamp-2">{article.excerpt}</p>}
                 </div>
                 <div className="flex items-center gap-2 ml-4">
-                  <Button size="icon" variant="ghost" onClick={() => togglePublished(article)} title={article.published ? 'Despublicar' : 'Publicar'}>
+                  <Button size="icon" variant="ghost" onClick={() => togglePublished(article)}>
                     {article.published ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </Button>
                   <Button size="icon" variant="ghost" onClick={() => { setEditingArticle(article); setShowForm(true); }}>
